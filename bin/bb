@@ -1,0 +1,91 @@
+#!/usr/bin/env python3
+
+from __future__ import annotations
+
+import argparse
+import os
+import signal
+import sys
+from pathlib import Path
+from typing import Iterable, Tuple
+
+TREE = Path(__file__).resolve().parent.parent
+SRC_DIR = TREE.joinpath("src")
+TASKS_DIR = SRC_DIR.joinpath("tasks")
+LIB_DIR = SRC_DIR.joinpath("lib")
+
+os.environ["BB_SRC"] = str(SRC_DIR)
+
+sys.path.append(str(SRC_DIR))  # allow tool & modules to import from src/bb subdirs
+sys.path.append(str(TASKS_DIR))
+sys.path.append(str(LIB_DIR))
+
+from bb.signal import CaughtSignal, SignalHandler  # noqa E402
+from bb.task import find_task_to_run, list_tasks  # noqa E402
+
+
+USAGE = """bb [-h] [task] [arg=value] [arg=value] [arg=....]
+
+""" + list_tasks(TASKS_DIR)
+
+
+def prepare_parser() -> Tuple[argparse.ArgumentParser, Iterable[str]]:
+    """
+    Set up parser args for each module name - to have a useful .help()
+    Return the parser (so it can be used to .help()) and the cli elements
+    """
+    parser = argparse.ArgumentParser(prog="bb", usage=USAGE)
+    parser.add_argument("task", help="bb task", default="")
+    parser.add_argument("--env", required=True, help="environment", default="")
+    parser.add_argument("-l", "--list", action="store_true", help="List tasks", default="")
+    return parser, sys.argv[1:]
+
+
+def main():
+    # bb -env preprod do.this.now a=1 b=2 c=flarg
+    # OPTS = env=preprod task=do.this.now
+    # ARGS = ["a=1", "b=2", "c=flarg"]
+    with SignalHandler():
+        try:
+
+            parser, args = prepare_parser()
+            opts, args = parser.parse_known_args(args)
+            task = getattr(opts, "task", None)
+
+            if not task:
+                print("task name argument not provided")
+                parser.print_help()
+                return 1
+
+            # set --env in os.environ
+            os.environ["BB_ENV"] = opts.env.lower()
+
+            # Look up the function 
+            fn = find_task_to_run(task, TASKS_DIR)
+
+            if fn:
+                # convert arg sequence into **kwargs for task function and run the task function
+                task_args = {a[0].strip(): a[1].strip() for a in [p.split("=") for p in args]}
+
+                # call the task function
+                fn(**task_args)
+            else:
+                print(f"No task '{task}' found", file=sys.stderr)
+                return 1
+
+        except CaughtSignal as s:
+            if s.signum == signal.SIGINT:
+                print("Caught SIGINT, exiting.")
+            if s.signum == signal.SIGTERM:
+                print("Caught SIGTERM, exiting.")
+            return s.signum
+
+        except Exception as e:
+            print(e, file=sys.stderr)
+            return 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())
+
+# vim: et ai sw=4 ts=4 syntax=python
